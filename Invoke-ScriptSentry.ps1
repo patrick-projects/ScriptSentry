@@ -2,33 +2,40 @@ function Invoke-ScriptSentry{
 <#
 .SYNOPSIS
 ScriptSentry finds misconfigured and dangerous logon scripts.
-
 .DESCRIPTION
-ScriptSentry searches the NETLOGON share & Group Policy to 
+ScriptSentry searches the NETLOGON share & Group Policy to
     1) identify plaintext credentials in logon scripts
-    2) identify admins that have logon script set 
+    2) identify admins that have logon script set
     3) identify scripts and shares that may have dangerous permissions
-
 .EXAMPLE
 Invoke-ScriptSentry
-
 .EXAMPLE
 Invoke-ScriptSentry | Out-File c:\temp\ScriptSentry.txt
-
 .EXAMPLE
 Invoke-ScriptSentry -SaveOutput $true
-
 #>
 [CmdletBinding()]
 Param(
-    [boolean]$SaveOutput = $false
+    [boolean]$SaveOutput = $false,
+    [Management.Automation.PSCredential]
+    [Management.Automation.CredentialAttribute()]
+    $Credential = [Management.Automation.PSCredential]::Empty
 )
-    
+   
 function Get-ForestDomains {
     [CmdletBinding()]
-    param()
-
-    $forest = [System.DirectoryServices.ActiveDirectory.Forest]::GetCurrentForest()
+    param(
+        [Management.Automation.PSCredential]
+        [Management.Automation.CredentialAttribute()]
+        $Credential = [Management.Automation.PSCredential]::Empty
+    )
+    if ($PSBoundParameters['Credential']) {
+        $forestName = ([System.DirectoryServices.ActiveDirectory.Forest]::GetCurrentForest()).Name
+        $context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Forest', $forestName, $Credential.UserName, $Credential.GetNetworkCredential().Password)
+        [System.DirectoryServices.ActiveDirectory.Forest]::GetForest($context)
+    } else {
+        [System.DirectoryServices.ActiveDirectory.Forest]::GetCurrentForest()
+    }
     $forest.Domains
 }
 function Get-Domain {
@@ -39,17 +46,13 @@ function Get-Domain {
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
-
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
     )
-
     PROCESS {
         if ($PSBoundParameters['Credential']) {
-
             Write-Verbose '[Get-Domain] Using alternate credentials for Get-Domain'
-
             if ($PSBoundParameters['Domain']) {
                 $TargetDomain = $Domain
             }
@@ -58,9 +61,7 @@ function Get-Domain {
                 $TargetDomain = $Credential.GetNetworkCredential().Domain
                 Write-Verbose "[Get-Domain] Extracted domain '$TargetDomain' from -Credential"
             }
-
             $DomainContext = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext('Domain', $TargetDomain, $Credential.UserName, $Credential.GetNetworkCredential().Password)
-
             try {
                 [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($DomainContext)
             }
@@ -96,58 +97,45 @@ function Get-DomainSearcher {
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
-
         [ValidateNotNullOrEmpty()]
         [Alias('Filter')]
         [String]
         $LDAPFilter,
-
         [ValidateNotNullOrEmpty()]
         [String[]]
         $Properties,
-
         [ValidateNotNullOrEmpty()]
         [Alias('ADSPath')]
         [String]
         $SearchBase,
-
         [ValidateNotNullOrEmpty()]
         [String]
         $SearchBasePrefix,
-
         [ValidateNotNullOrEmpty()]
         [Alias('DomainController')]
         [String]
         $Server,
-
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
-
         [ValidateRange(1, 10000)]
         [Int]
         $ResultPageSize = 200,
-
         [ValidateRange(1, 10000)]
         [Int]
         $ServerTimeLimit = 120,
-
         [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
         [String]
         $SecurityMasks,
-
         [Switch]
         $Tombstone,
-
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
     )
-
     PROCESS {
         if ($PSBoundParameters['Domain']) {
             $TargetDomain = $Domain
-
             if ($ENV:USERDNSDOMAIN -and ($ENV:USERDNSDOMAIN.Trim() -ne '')) {
                 # see if we can grab the user DNS logon domain from environment variables
                 $UserDomain = $ENV:USERDNSDOMAIN
@@ -176,25 +164,20 @@ function Get-DomainSearcher {
             $BindServer = ($DomainObject.PdcRoleOwner).Name
             $TargetDomain = $DomainObject.Name
         }
-
         if ($PSBoundParameters['Server']) {
             # if there's not a specified server to bind to, try to pull a logon server from ENV variables
             $BindServer = $Server
         }
-
         $SearchString = 'LDAP://'
-
         if ($BindServer -and ($BindServer.Trim() -ne '')) {
             $SearchString += $BindServer
             if ($TargetDomain) {
                 $SearchString += '/'
             }
         }
-
         if ($PSBoundParameters['SearchBasePrefix']) {
             $SearchString += $SearchBasePrefix + ','
         }
-
         if ($PSBoundParameters['SearchBase']) {
             if ($SearchBase -Match '^GC://') {
                 # if we're searching the global catalog, get the path in the right format
@@ -222,10 +205,8 @@ function Get-DomainSearcher {
                 $DN = "DC=$($TargetDomain.Replace('.', ',DC='))"
             }
         }
-
         $SearchString += $DN
         Write-Verbose "[Get-DomainSearcher] search base: $SearchString"
-
         if ($Credential -ne [Management.Automation.PSCredential]::Empty) {
             Write-Verbose "[Get-DomainSearcher] Using alternate credentials for LDAP connection"
             # bind to the inital search object using alternate credentials
@@ -236,24 +217,19 @@ function Get-DomainSearcher {
             # bind to the inital object using the current credentials
             $Searcher = New-Object System.DirectoryServices.DirectorySearcher([ADSI]$SearchString)
         }
-
         $Searcher.PageSize = $ResultPageSize
         $Searcher.SearchScope = $SearchScope
         $Searcher.CacheResults = $False
         $Searcher.ReferralChasing = [System.DirectoryServices.ReferralChasingOption]::All
-
         if ($PSBoundParameters['ServerTimeLimit']) {
             $Searcher.ServerTimeLimit = $ServerTimeLimit
         }
-
         if ($PSBoundParameters['Tombstone']) {
             $Searcher.Tombstone = $True
         }
-
         if ($PSBoundParameters['LDAPFilter']) {
             $Searcher.filter = $LDAPFilter
         }
-
         if ($PSBoundParameters['SecurityMasks']) {
             $Searcher.SecurityMasks = Switch ($SecurityMasks) {
                 'Dacl' { [System.DirectoryServices.SecurityMasks]::Dacl }
@@ -263,13 +239,11 @@ function Get-DomainSearcher {
                 'Sacl' { [System.DirectoryServices.SecurityMasks]::Sacl }
             }
         }
-
         if ($PSBoundParameters['Properties']) {
             # handle an array of properties to load w/ the possibility of comma-separated strings
             $PropertiesToLoad = $Properties| ForEach-Object { $_.Split(',') }
             $Null = $Searcher.PropertiesToLoad.AddRange(($PropertiesToLoad))
         }
-
         $Searcher
     }
 }
@@ -283,58 +257,45 @@ function Get-DomainGroupMember {
         [Alias('DistinguishedName', 'SamAccountName', 'Name', 'MemberDistinguishedName', 'MemberName')]
         [String[]]
         $Identity,
-
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
-
         [Parameter(ParameterSetName = 'ManualRecurse')]
         [Switch]
         $Recurse,
-
         [Parameter(ParameterSetName = 'RecurseUsingMatchingRule')]
         [Switch]
         $RecurseUsingMatchingRule,
-
         [ValidateNotNullOrEmpty()]
         [Alias('Filter')]
         [String]
         $LDAPFilter,
-
         [ValidateNotNullOrEmpty()]
         [Alias('ADSPath')]
         [String]
         $SearchBase,
-
         [ValidateNotNullOrEmpty()]
         [Alias('DomainController')]
         [String]
         $Server,
-
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
-
         [ValidateRange(1, 10000)]
         [Int]
         $ResultPageSize = 200,
-
         [ValidateRange(1, 10000)]
         [Int]
         $ServerTimeLimit,
-
         [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
         [String]
         $SecurityMasks,
-
         [Switch]
         $Tombstone,
-
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty
     )
-
     BEGIN {
         $SearcherArguments = @{
             'Properties' = 'member,samaccountname,distinguishedname'
@@ -348,13 +309,11 @@ function Get-DomainGroupMember {
         if ($PSBoundParameters['ServerTimeLimit']) { $SearcherArguments['ServerTimeLimit'] = $ServerTimeLimit }
         if ($PSBoundParameters['Tombstone']) { $SearcherArguments['Tombstone'] = $Tombstone }
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
-
         $ADNameArguments = @{}
         if ($PSBoundParameters['Domain']) { $ADNameArguments['Domain'] = $Domain }
         if ($PSBoundParameters['Server']) { $ADNameArguments['Server'] = $Server }
         if ($PSBoundParameters['Credential']) { $ADNameArguments['Credential'] = $Credential }
     }
-
     PROCESS {
         $GroupSearcher = Get-DomainSearcher @SearcherArguments
         if ($GroupSearcher) {
@@ -362,14 +321,12 @@ function Get-DomainGroupMember {
                 $SearcherArguments['Identity'] = $Identity
                 $SearcherArguments['Raw'] = $True
                 $Group = Get-DomainGroup @SearcherArguments
-
                 if (-not $Group) {
                     Write-Warning "[Get-DomainGroupMember] Error searching for group with identity: $Identity"
                 }
                 else {
                     $GroupFoundName = $Group.properties.item('samaccountname')[0]
                     $GroupFoundDN = $Group.properties.item('distinguishedname')[0]
-
                     if ($PSBoundParameters['Domain']) {
                         $GroupFoundDomain = $Domain
                     }
@@ -398,7 +355,7 @@ function Get-DomainGroupMember {
                         $IdentityFilter += "(distinguishedname=$IdentityInstance)"
                         if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
                             # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
-                            #   and rebuild the domain searcher
+                            # and rebuild the domain searcher
                             $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
                             Write-Verbose "[Get-DomainGroupMember] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
                             $SearcherArguments['Domain'] = $IdentityDomain
@@ -427,16 +384,13 @@ function Get-DomainGroupMember {
                         $IdentityFilter += "(samAccountName=$IdentityInstance)"
                     }
                 }
-
                 if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
                     $Filter += "(|$IdentityFilter)"
                 }
-
                 if ($PSBoundParameters['LDAPFilter']) {
                     Write-Verbose "[Get-DomainGroupMember] Using additional LDAP filter: $LDAPFilter"
                     $Filter += "$LDAPFilter"
                 }
-
                 $GroupSearcher.filter = "(&(objectCategory=group)$Filter)"
                 Write-Verbose "[Get-DomainGroupMember] Get-DomainGroupMember filter string: $($GroupSearcher.filter)"
                 try {
@@ -446,19 +400,15 @@ function Get-DomainGroupMember {
                     Write-Warning "[Get-DomainGroupMember] Error searching for group with identity '$Identity': $_"
                     $Members = @()
                 }
-
                 $GroupFoundName = ''
                 $GroupFoundDN = ''
-
                 if ($Result) {
                     $Members = $Result.properties.item('member')
-
                     if ($Members.count -eq 0) {
                         # ranged searching, thanks @meatballs__ !
                         $Finished = $False
                         $Bottom = 0
                         $Top = 0
-
                         while (-not $Finished) {
                             $Top = $Bottom + 1499
                             $MemberRange="member;range=$Bottom-$Top"
@@ -467,14 +417,12 @@ function Get-DomainGroupMember {
                             $Null = $GroupSearcher.PropertiesToLoad.Add("$MemberRange")
                             $Null = $GroupSearcher.PropertiesToLoad.Add('samaccountname')
                             $Null = $GroupSearcher.PropertiesToLoad.Add('distinguishedname')
-
                             try {
                                 $Result = $GroupSearcher.FindOne()
                                 $RangedProperty = $Result.Properties.PropertyNames -like "member;range=*"
                                 $Members += $Result.Properties.item($RangedProperty)
                                 $GroupFoundName = $Result.properties.item('samaccountname')[0]
                                 $GroupFoundDN = $Result.properties.item('distinguishedname')[0]
-
                                 if ($Members.count -eq 0) {
                                     $Finished = $True
                                 }
@@ -489,7 +437,6 @@ function Get-DomainGroupMember {
                         $GroupFoundDN = $Result.properties.item('distinguishedname')[0]
                         $Members += $Result.Properties.item($RangedProperty)
                     }
-
                     if ($PSBoundParameters['Domain']) {
                         $GroupFoundDomain = $Domain
                     }
@@ -501,7 +448,6 @@ function Get-DomainGroupMember {
                     }
                 }
             }
-
             ForEach ($Member in $Members) {
                 if ($Recurse -and $UseMatchingRule) {
                     $Properties = $_.Properties
@@ -514,20 +460,17 @@ function Get-DomainGroupMember {
                     $Object = Get-DomainObject @ObjectSearcherArguments
                     $Properties = $Object.Properties
                 }
-
                 if ($Properties) {
                     $GroupMember = New-Object PSObject
                     $GroupMember | Add-Member Noteproperty 'GroupDomain' $GroupFoundDomain
                     $GroupMember | Add-Member Noteproperty 'GroupName' $GroupFoundName
                     $GroupMember | Add-Member Noteproperty 'GroupDistinguishedName' $GroupFoundDN
-
                     if ($Properties.objectsid) {
                         $MemberSID = ((New-Object System.Security.Principal.SecurityIdentifier $Properties.objectsid[0], 0).Value)
                     }
                     else {
                         $MemberSID = $Null
                     }
-
                     try {
                         $MemberDN = $Properties.distinguishedname[0]
                         if ($MemberDN -match 'ForeignSecurityPrincipals|S-1-5-21') {
@@ -536,7 +479,6 @@ function Get-DomainGroupMember {
                                     $MemberSID = $Properties.cn[0]
                                 }
                                 $MemberSimpleName = Convert-ADName -Identity $MemberSID -OutputType 'DomainSimple' @ADNameArguments
-
                                 if ($MemberSimpleName) {
                                     $MemberDomain = $MemberSimpleName.Split('@')[1]
                                 }
@@ -559,7 +501,6 @@ function Get-DomainGroupMember {
                         $MemberDN = $Null
                         $MemberDomain = $Null
                     }
-
                     if ($Properties.samaccountname) {
                         # forest users have the samAccountName set
                         $MemberName = $Properties.samaccountname[0]
@@ -574,7 +515,6 @@ function Get-DomainGroupMember {
                             $MemberName = $Properties.cn[0]
                         }
                     }
-
                     if ($Properties.objectclass -match 'computer') {
                         $MemberObjectClass = 'computer'
                     }
@@ -594,7 +534,6 @@ function Get-DomainGroupMember {
                     $GroupMember | Add-Member Noteproperty 'MemberSID' $MemberSID
                     $GroupMember.PSObject.TypeNames.Insert(0, 'StrongView.GroupMember')
                     $GroupMember
-
                     # if we're doing manual recursion
                     if ($PSBoundParameters['Recurse'] -and $MemberDN -and ($MemberObjectClass -match 'group')) {
                         Write-Verbose "[Get-DomainGroupMember] Manually recursing on group: $MemberDN"
@@ -619,78 +558,78 @@ function Get-DomainUser {
             [Alias('DistinguishedName', 'SamAccountName', 'Name', 'MemberDistinguishedName', 'MemberName')]
             [String[]]
             $Identity,
-    
+   
             [Switch]
             $SPN,
-    
+   
             [Switch]
             $AdminCount,
-    
+   
             [Parameter(ParameterSetName = 'AllowDelegation')]
             [Switch]
             $AllowDelegation,
-    
+   
             [Parameter(ParameterSetName = 'DisallowDelegation')]
             [Switch]
             $DisallowDelegation,
-    
+   
             [Switch]
             $TrustedToAuth,
-    
+   
             [Alias('KerberosPreauthNotRequired', 'NoPreauth')]
             [Switch]
             $PreauthNotRequired,
-    
+   
             [ValidateNotNullOrEmpty()]
             [String]
             $Domain,
-    
+   
             [ValidateNotNullOrEmpty()]
             [Alias('Filter')]
             [String]
             $LDAPFilter,
-    
+   
             [ValidateNotNullOrEmpty()]
             [String[]]
             $Properties,
-    
+   
             [ValidateNotNullOrEmpty()]
             [Alias('ADSPath')]
             [String]
             $SearchBase,
-    
+   
             [ValidateNotNullOrEmpty()]
             [Alias('DomainController')]
             [String]
             $Server,
-    
+   
             [ValidateSet('Base', 'OneLevel', 'Subtree')]
             [String]
             $SearchScope = 'Subtree',
-    
+   
             [ValidateRange(1, 10000)]
             [Int]
             $ResultPageSize = 200,
-    
+   
             [ValidateRange(1, 10000)]
             [Int]
             $ServerTimeLimit,
-    
+   
             [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
             [String]
             $SecurityMasks,
-    
+   
             [Switch]
             $Tombstone,
-    
+   
             [Alias('ReturnOne')]
             [Switch]
             $FindOne,
-    
+   
             [Management.Automation.PSCredential]
             [Management.Automation.CredentialAttribute()]
             $Credential = [Management.Automation.PSCredential]::Empty,
-    
+   
             [Switch]
             $Raw
         )
@@ -708,7 +647,7 @@ function Get-DomainUser {
             if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
             $UserSearcher = Get-DomainSearcher @SearcherArguments
         }
-    
+   
     PROCESS {
             if ($UserSearcher) {
                 $IdentityFilter = ''
@@ -722,7 +661,7 @@ function Get-DomainUser {
                         $IdentityFilter += "(distinguishedname=$IdentityInstance)"
                         if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
                             # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
-                            #   and rebuild the domain searcher
+                            # and rebuild the domain searcher
                             $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
                             Write-Verbose "[Get-DomainUser] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
                             $SearcherArguments['Domain'] = $IdentityDomain
@@ -751,11 +690,11 @@ function Get-DomainUser {
                         $IdentityFilter += "(samAccountName=$IdentityInstance)"
                     }
                 }
-    
+   
                 if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
                     $Filter += "(|$IdentityFilter)"
                 }
-    
+   
                 if ($PSBoundParameters['SPN']) {
                     Write-Verbose '[Get-DomainUser] Searching for non-null service principal names'
                     $Filter += '(servicePrincipalName=*)'
@@ -785,7 +724,7 @@ function Get-DomainUser {
                     Write-Verbose "[Get-DomainUser] Using additional LDAP filter: $LDAPFilter"
                     $Filter += "$LDAPFilter"
                 }
-    
+   
                 # build the LDAP filter for the dynamic UAC filter value
                 $UACFilter | Where-Object {$_} | ForEach-Object {
                     if ($_ -match 'NOT_.*') {
@@ -798,10 +737,10 @@ function Get-DomainUser {
                         $Filter += "(userAccountControl:1.2.840.113556.1.4.803:=$UACValue)"
                     }
                 }
-    
+   
                 $UserSearcher.filter = "(&(samAccountType=805306368)$Filter)"
                 Write-Verbose "[Get-DomainUser] filter string: $($UserSearcher.filter)"
-    
+   
                 if ($PSBoundParameters['FindOne']) { $Results = $UserSearcher.FindOne() }
                 else { $Results = $UserSearcher.FindAll() }
                 $Results | Where-Object {$_} | ForEach-Object {
@@ -836,61 +775,47 @@ function Get-DomainObject {
         [Alias('DistinguishedName', 'SamAccountName', 'Name', 'MemberDistinguishedName', 'MemberName')]
         [String[]]
         $Identity,
-
         [ValidateNotNullOrEmpty()]
         [String]
         $Domain,
-
         [ValidateNotNullOrEmpty()]
         [Alias('Filter')]
         [String]
         $LDAPFilter,
-
         [ValidateNotNullOrEmpty()]
         [String[]]
         $Properties,
-
         [ValidateNotNullOrEmpty()]
         [Alias('ADSPath')]
         [String]
         $SearchBase,
-
         [ValidateNotNullOrEmpty()]
         [Alias('DomainController')]
         [String]
         $Server,
-
         [ValidateSet('Base', 'OneLevel', 'Subtree')]
         [String]
         $SearchScope = 'Subtree',
-
         [ValidateRange(1, 10000)]
         [Int]
         $ResultPageSize = 200,
-
         [ValidateRange(1, 10000)]
         [Int]
         $ServerTimeLimit,
-
         [ValidateSet('Dacl', 'Group', 'None', 'Owner', 'Sacl')]
         [String]
         $SecurityMasks,
-
         [Switch]
         $Tombstone,
-
         [Alias('ReturnOne')]
         [Switch]
         $FindOne,
-
         [Management.Automation.PSCredential]
         [Management.Automation.CredentialAttribute()]
         $Credential = [Management.Automation.PSCredential]::Empty,
-
         [Switch]
         $Raw
     )
-
     BEGIN {
         $SearcherArguments = @{}
         if ($PSBoundParameters['Domain']) { $SearcherArguments['Domain'] = $Domain }
@@ -905,7 +830,6 @@ function Get-DomainObject {
         if ($PSBoundParameters['Credential']) { $SearcherArguments['Credential'] = $Credential }
         $ObjectSearcher = Get-DomainSearcher @SearcherArguments
     }
-
     PROCESS {
         if ($ObjectSearcher) {
             $IdentityFilter = ''
@@ -919,7 +843,7 @@ function Get-DomainObject {
                     $IdentityFilter += "(distinguishedname=$IdentityInstance)"
                     if ((-not $PSBoundParameters['Domain']) -and (-not $PSBoundParameters['SearchBase'])) {
                         # if a -Domain isn't explicitly set, extract the object domain out of the distinguishedname
-                        #   and rebuild the domain searcher
+                        # and rebuild the domain searcher
                         $IdentityDomain = $IdentityInstance.SubString($IdentityInstance.IndexOf('DC=')) -replace 'DC=','' -replace ',','.'
                         Write-Verbose "[Get-DomainObject] Extracted domain '$IdentityDomain' from '$IdentityInstance'"
                         $SearcherArguments['Domain'] = $IdentityDomain
@@ -954,12 +878,10 @@ function Get-DomainObject {
             if ($IdentityFilter -and ($IdentityFilter.Trim() -ne '') ) {
                 $Filter += "(|$IdentityFilter)"
             }
-
             if ($PSBoundParameters['LDAPFilter']) {
                 Write-Verbose "[Get-DomainObject] Using additional LDAP filter: $LDAPFilter"
                 $Filter += "$LDAPFilter"
             }
-
             # build the LDAP filter for the dynamic UAC filter value
             $UACFilter | Where-Object {$_} | ForEach-Object {
                 if ($_ -match 'NOT_.*') {
@@ -972,12 +894,10 @@ function Get-DomainObject {
                     $Filter += "(userAccountControl:1.2.840.113556.1.4.803:=$UACValue)"
                 }
             }
-
             if ($Filter -and $Filter -ne '') {
                 $ObjectSearcher.filter = "(&$Filter)"
             }
             Write-Verbose "[Get-DomainObject] Get-DomainObject filter string: $($ObjectSearcher.filter)"
-
             if ($PSBoundParameters['FindOne']) { $Results = $ObjectSearcher.FindOne() }
             else { $Results = $ObjectSearcher.FindAll() }
             $Results | Where-Object {$_} | ForEach-Object {
@@ -1005,16 +925,21 @@ function Get-DomainObject {
 function Get-LogonScripts {
     [CmdletBinding()]
     param()
-
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-ForestDomains
-
+    $Domains = Get-ForestDomains -Credential $Credential
     foreach ($Domain in $Domains) {
         # $SysvolScripts = '\\' + (Get-ADDomain).DNSRoot + '\sysvol\' + (Get-ADDomain).DNSRoot + '\scripts'
         $SysvolScripts = "\\$($Domain.Name)\sysvol\$($Domain.Name)\scripts"
+        if ($Credential -ne [Management.Automation.PSCredential]::Empty) {
+            New-PSDrive -Name 'TempSysvol' -PSProvider FileSystem -Root "\\$($Domain.Name)\sysvol" -Credential $Credential -ErrorAction Stop
+            $SysvolScripts = "TempSysvol:\$($Domain.Name)\scripts"
+        }
         $ExtensionList = '.bat|.vbs|.ps1|.cmd|.kix'
         $LogonScripts = try { Get-ChildItem -Path $SysvolScripts -Recurse | Where-Object {$_.Extension -match $ExtensionList} } catch {}
+        if ($Credential -ne [Management.Automation.PSCredential]::Empty) {
+            Remove-PSDrive -Name 'TempSysvol'
+        }
         Write-Verbose "[+] Logon scripts:"
         $LogonScripts | ForEach-Object {
             Write-Verbose -Message "$($_.fullName)"
@@ -1025,14 +950,17 @@ function Get-LogonScripts {
 function Get-GPOLogonScripts {
     [CmdletBinding()]
     param()
-
     # Get the current domain name from the environment
     # $currentDomain = [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    $Domains = Get-ForestDomains
-
+    $Domains = Get-ForestDomains -Credential $Credential
     foreach ($Domain in $Domains) {
-        $Policies = Get-ChildItem "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies" -ErrorAction SilentlyContinue
-        $Policies | ForEach-Object { 
+        $SysvolPath = "\\$($Domain.Name)\SysVol\$($Domain.Name)\Policies"
+        if ($Credential -ne [Management.Automation.PSCredential]::Empty) {
+            New-PSDrive -Name 'TempSysvol' -PSProvider FileSystem -Root "\\$($Domain.Name)\sysvol" -Credential $Credential -ErrorAction Stop
+            $SysvolPath = "TempSysvol:\$($Domain.Name)\Policies"
+        }
+        $Policies = Get-ChildItem $SysvolPath -ErrorAction SilentlyContinue
+        $Policies | ForEach-Object {
             $GPOLogonScripts = Get-Content -Path "$($_.FullName)\User\Scripts\scripts.ini" -ErrorAction SilentlyContinue | Select-String -Pattern "\\\\.*\.\w+" | ForEach-Object { $_.Matches.Value }
             Write-Verbose "[+] GPO Logon scripts:"
             $GPOLogonScripts | ForEach-Object {
@@ -1042,13 +970,15 @@ function Get-GPOLogonScripts {
                 Get-Item -Path $GPOLogonScripts | Sort-Object -Unique
             }
         }
+        if ($Credential -ne [Management.Automation.PSCredential]::Empty) {
+            Remove-PSDrive -Name 'TempSysvol'
+        }
     }
 }
 function Get-NetlogonSysvol {
     [CmdletBinding()]
     param()
-
-    $Domains = Get-ForestDomains
+    $Domains = Get-ForestDomains -Credential $Credential
     foreach ($Domain in $Domains){
         "\\$($Domain.Name)\NETLOGON"
         "\\$($Domain.Name)\SYSVOL"
@@ -1056,16 +986,16 @@ function Get-NetlogonSysvol {
 }
 function Get-Art($Version) {
 "
- _______  _______  _______ _________ _______ _________ _______  _______  _       _________ _______          
-(  ____ \(  ____ \(  ____ )\__   __/(  ____ )\__   __/(  ____ \(  ____ \( (    /|\__   __/(  ____ )|\     /|
-| (    \/| (    \/| (    )|   ) (   | (    )|   ) (   | (    \/| (    \/|  \  ( |   ) (   | (    )|( \   / )
-| (_____ | |      | (____)|   | |   | (____)|   | |   | (_____ | (__    |   \ | |   | |   | (____)| \ (_) / 
-(_____  )| |      |     __)   | |   |  _____)   | |   (_____  )|  __)   | (\ \) |   | |   |     __)  \   /  
-      ) || |      | (\ (      | |   | (         | |         ) || (      | | \   |   | |   | (\ (      ) (   
-/\____) || (____/\| ) \ \_____) (___| )         | |   /\____) || (____/\| )  \  |   | |   | ) \ \__   | |   
-\_______)(_______/|/   \__/\_______/|/          )_(   \_______)(_______/|/    )_)   )_(   |/   \__/   \_/   
-                              by: Spencer Alessi @techspence                                                                 
-                                          v$Version                                           
+ _______ _______ _______ _________ _______ _________ _______ _______ _ _________ _______
+( ____ \( ____ \( ____ )\__ __/( ____ )\__ __/( ____ \( ____ \( ( /|\__ __/( ____ )|\ /|
+| ( \/| ( \/| ( )| ) ( | ( )| ) ( | ( \/| ( \/| \ ( | ) ( | ( )|( \ / )
+| (_____ | | | (____)| | | | (____)| | | | (_____ | (__ | \ | | | | | (____)| \ (_) /
+(_____ )| | | __) | | | _____) | | (_____ )| __) | (\ \) | | | | __) \ /
+      ) || | | (\ ( | | | ( | | ) || ( | | \ | | | | (\ ( ) (
+/\____) || (____/\| ) \ \_____) (___| ) | | /\____) || (____/\| ) \ | | | | ) \ \__ | |
+\_______)(_______/|/ \__/\_______/|/ )_( \_______)(_______/|/ )_) )_( |/ \__/ \_/
+                              by: Spencer Alessi @techspence
+                                          v$Version
                                       __,_______
                                      / __.==---/ * * * * * *
                                     / (-'
@@ -1076,30 +1006,20 @@ function Get-Art($Version) {
 function Convert-LDAPProperty {
 <#
 .SYNOPSIS
-
 Helper that converts specific LDAP property result fields and outputs
 a custom psobject.
-
-Author: Will Schroeder (@harmj0y)  
-License: BSD 3-Clause  
-Required Dependencies: None  
-
+Author: Will Schroeder (@harmj0y)
+License: BSD 3-Clause
+Required Dependencies: None
 .DESCRIPTION
-
 Converts a set of raw LDAP properties results from ADSI/LDAP searches
 into a proper PSObject. Used by several of the Get-Domain* function.
-
 .PARAMETER Properties
-
 Properties object to extract out LDAP fields for display.
-
 .OUTPUTS
-
 System.Management.Automation.PSCustomObject
-
 A custom PSObject with LDAP hashtable properties translated.
 #>
-
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSShouldProcess', '')]
     [OutputType('System.Management.Automation.PSCustomObject')]
     [CmdletBinding()]
@@ -1108,9 +1028,7 @@ A custom PSObject with LDAP hashtable properties translated.
         [ValidateNotNullOrEmpty()]
         $Properties
     )
-
     $ObjectProperties = @{}
-
     $Properties.PropertyNames | ForEach-Object {
         if ($_ -ne 'adspath') {
             if (($_ -eq 'objectsid') -or ($_ -eq 'sidhistory')) {
@@ -1160,7 +1078,7 @@ A custom PSObject with LDAP hashtable properties translated.
                     # if we have a System.__ComObject
                     $Temp = $Properties[$_][0]
                     [Int32]$High = $Temp.GetType().InvokeMember('HighPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
-                    [Int32]$Low  = $Temp.GetType().InvokeMember('LowPart',  [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
+                    [Int32]$Low = $Temp.GetType().InvokeMember('LowPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
                     $ObjectProperties[$_] = ([datetime]::FromFileTime([Int64]("0x{0:x8}{1:x8}" -f $High, $Low)))
                 }
                 else {
@@ -1174,7 +1092,7 @@ A custom PSObject with LDAP hashtable properties translated.
                 try {
                     $Temp = $Prop[$_][0]
                     [Int32]$High = $Temp.GetType().InvokeMember('HighPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
-                    [Int32]$Low  = $Temp.GetType().InvokeMember('LowPart',  [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
+                    [Int32]$Low = $Temp.GetType().InvokeMember('LowPart', [System.Reflection.BindingFlags]::GetProperty, $Null, $Temp, $Null)
                     $ObjectProperties[$_] = [Int64]("0x{0:x8}{1:x8}" -f $High, $Low)
                 }
                 catch {
@@ -1201,11 +1119,11 @@ function Find-AdminLogonScripts {
     [CmdletBinding()]
     param (
         [array]$AdminUsers
-    ) 
+    )
     # Enabled user accounts
     Foreach ($Admin in $AdminUsers) {
-        $AdminLogonScripts = Get-DomainUser -Identity $Admin.MemberName | Where-Object { $_.scriptPath -ne $null}
-        
+        $AdminLogonScripts = Get-DomainUser -Identity $Admin.MemberName -Credential $Credential | Where-Object { $_.scriptPath -ne $null}
+       
         # "`n[!] Admins found with logon scripts"
         $AdminLogonScripts | Foreach-object {
             $Results = [ordered] @{
@@ -1245,7 +1163,6 @@ function Find-UNCScripts {
         [Parameter(Mandatory = $true)]
         [array]$LogonScripts
     )
-
     $ExcludedMatches = "copy|&|/command|%WINDIR%|-i|\*"
     $UNCFiles = @()
     [Array] $UNCFiles = foreach ($script in $LogonScripts) {
@@ -1262,7 +1179,7 @@ function Find-UNCScripts {
     $UNCFiles | ForEach-Object {
         Write-Verbose -Message "$_"
     }
-    
+   
     $UNCFiles | Sort-Object -Unique
 }
 function Find-MappedDrives {
@@ -1271,10 +1188,9 @@ function Find-MappedDrives {
         [Parameter(Mandatory = $true)]
         [array]$LogonScripts
     )
-
     $Shares = @()
     [Array] $Shares = foreach ($script in $LogonScripts) {
-        $temp = Get-Content $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern '.*net use.*','New-SmbMapping','.MapNetworkDrive' | ForEach-Object { $_.Matches.Value } 
+        $temp = Get-Content $script.FullName -ErrorAction SilentlyContinue | Select-String -Pattern '.*net use.*','New-SmbMapping','.MapNetworkDrive' | ForEach-Object { $_.Matches.Value }
         $temp = $temp | Select-String -Pattern '\\\\[\w\.\-]+\\[\w\-_\\.]+' | ForEach-Object { $_.Matches.Value }
         $temp | ForEach-Object {
             try {
@@ -1290,12 +1206,10 @@ function Find-MappedDrives {
             }
         }
     }
-
     Write-Verbose "[+] Mapped drives:"
     $Shares | Sort-Object -Unique | ForEach-Object {
         Write-Verbose -Message "$_"
     }
-
     $Shares | Sort-Object -Unique
 }
 function Find-NonexistentShares {
@@ -1317,20 +1231,17 @@ function Find-NonexistentShares {
             [pscustomobject] $ServerList
         }
     }
-
     $LogonScriptShares = $LogonScriptShares #| Sort-Object -Property Share -Unique
     $AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers
     $Admins = 'No'
     $Exploitable = 'No'
-
     $NonExistentShares = @()
     [Array] $NonExistentShares = foreach ($LogonScriptShare in $LogonScriptShares) {
-        try { 
+        try {
             $DNSEntry = [System.Net.DNS]::GetHostByName($LogonScriptShare.Server)
         } catch {
             $ServerWithoutDNS = $LogonScriptShare
         }
-
         if ($ServerWithoutDNS) {
             foreach ($AdminScript in $AdminLogonScripts) {
                 if ((Get-Item $ServerWithoutDNS.Script).Name -match $AdminScript.LogonScript){
@@ -1362,7 +1273,6 @@ function Find-NonexistentShares {
             }
         }
     }
-
     $NonExistentShares
 }
 function Find-UnsafeLogonScriptPermissions {
@@ -1373,7 +1283,6 @@ function Find-UnsafeLogonScriptPermissions {
         [Parameter(Mandatory = $true)]
         [array]$SafeUsersList
     )
-
     $UnsafeRights = 'FullControl|Modify|Write'
     $SafeUsers = $SafeUsersList
     foreach ($script in $LogonScripts){
@@ -1403,7 +1312,6 @@ function Find-UnsafeUNCPermissions {
         [Parameter(Mandatory = $true)]
         [array]$SafeUsersList
     )
-
     $UnsafeRights = 'FullControl|Modify|Write'
     $SafeUsers = $SafeUsersList
     foreach ($script in $UNCScripts){
@@ -1454,7 +1362,6 @@ function Find-UnsafeLogonScriptPermissions {
         [Parameter(Mandatory = $true)]
         [array]$SafeUsersList
     )
-
     $UnsafeRights = 'FullControl|Modify|Write'
     $SafeUsers = $SafeUsersList
     foreach ($script in $LogonScripts){
@@ -1484,7 +1391,6 @@ function Find-UnsafeGPOLogonScriptPermissions {
         [Parameter(Mandatory = $true)]
         [array]$SafeUsersList
     )
-
     $UnsafeRights = 'FullControl|Modify|Write'
     $SafeUsers = $SafeUsersList
     foreach ($script in $GPOLogonScripts){
@@ -1506,26 +1412,23 @@ function Find-UnsafeGPOLogonScriptPermissions {
         }
     }
 }
-
 function Show-Results {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [array]$Results
     )
-
     $IssueTable = @{
-        Credentials                    = 'Plaintext credentials'
-        NonexistentShare               = 'Nonexistent Shares'
-        ExploitableLogonScript         = 'Admins with logonscripts mapped from nonexistent share'
-        AdminLogonScript               = 'Admins with logonscripts'
-        UnsafeNetlogonSysvol           = 'Unsafe NETLOGON/SYSVOL permissions'
-        UnsafeUNCFilePermission        = 'Unsafe UNC file permissions'
-        UnsafeUNCFolderPermission      = 'Unsafe UNC folder permissions'
-        UnsafeLogonScriptPermission    = 'Unsafe logon script permissions'
+        Credentials = 'Plaintext credentials'
+        NonexistentShare = 'Nonexistent Shares'
+        ExploitableLogonScript = 'Admins with logonscripts mapped from nonexistent share'
+        AdminLogonScript = 'Admins with logonscripts'
+        UnsafeNetlogonSysvol = 'Unsafe NETLOGON/SYSVOL permissions'
+        UnsafeUNCFilePermission = 'Unsafe UNC file permissions'
+        UnsafeUNCFolderPermission = 'Unsafe UNC folder permissions'
+        UnsafeLogonScriptPermission = 'Unsafe logon script permissions'
         UnsafeGPOLogonScriptPermission = 'Unsafe GPO logon script permissions'
     }
-
     if ($null -ne $Results) {
         $UniqueResults = $Results.Type | Sort-Object -Unique
         Write-Host "########## $($IssueTable[$UniqueResults]) ##########"
@@ -1533,75 +1436,59 @@ function Show-Results {
         $Results | Format-Table -Wrap
     }
 }
-
 Get-Art -Version '0.6'
-
 $SafeUsers = 'NT AUTHORITY\\SYSTEM|Administrator|NT SERVICE\\TrustedInstaller|Domain Admins|Server Operators|Enterprise Admins|CREATOR OWNER'
 $AdminGroups = @("Account Operators", "Administrators", "Backup Operators", "Cryptographic Operators", "Distributed COM Users", "Domain Admins", "Domain Controllers", "Enterprise Admins", "Print Operators", "Schema Admins", "Server Operators")
-$AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
+$AdminUsers = $AdminGroups | ForEach-Object { (Get-DomainGroupMember -Identity $_ -Recurse -Credential $Credential | Where-Object {$_.MemberObjectClass -eq 'user'})} | Sort-Object -Property MemberName -Unique
 $AdminUsers | ForEach-Object { $SafeUsers = $SafeUsers + '|' + $_.MemberName }
-
 # Get a list of all logon scripts
 $LogonScripts = Get-LogonScripts
-
 # Get a list of all GPO logon scripts
 $GPOLogonScripts = Get-GPOLogonScripts
-
 if ($LogonScripts) {
     # Find logon scripts (.bat, .vbs, .cmd, .ps1, .kix) that contain unc paths (e.g. \\srv01\fileshare1)
     $UNCScripts = Find-UNCScripts -LogonScripts $LogonScripts
-
     # Find mapped drives (e.g. \\srv01\fileshare1, \\srv02\fileshare2\accounting)
     $MappedDrives = Find-MappedDrives -LogonScripts $LogonScripts
-
     # Find nonexistent shares
     $NonExistentSharesScripts = Find-NonexistentShares -LogonScripts $LogonScripts -AdminUsers $AdminUsers
     $NonExistentShares = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Potentially'} | Sort-Object -Property Share -Unique
-
     # Find unsafe permissions on logon scripts
     $UnsafeLogonScripts = Find-UnsafeLogonScriptPermissions -LogonScripts $LogonScripts -SafeUsersList $SafeUsers
-
     # Find credentials in logon scripts
     $Credentials = Find-LogonScriptCredentials -LogonScripts $LogonScripts
 } else {
     Write-Host "[i] No logon scripts found!`n" -ForegroundColor Cyan
 }
-
 if ($NonExistentShares) {
     # Find Exploitable logon scripts
     $ExploitableLogonScripts = $NonExistentSharesScripts | Where-Object {$_.Exploitable -eq 'Yes'}
 } else {
     Write-Host "[i] No non-existent shares found!`n" -ForegroundColor Cyan
 }
-
 if ($UNCScripts) {
     # Find unsafe permissions for unc files found in logon scripts
     $UnsafeUNCPermissions = Find-UnsafeUNCPermissions -UNCScripts $UNCScripts -SafeUsersList $SafeUsers
 } else {
     Write-Host "[i] No UNC files found!`n" -ForegroundColor Cyan
 }
-
 if ($MappedDrives) {
     # Find unsafe permissions for unc paths found in logon scripts
     $UnsafeMappedDrives = Find-UnsafeUNCPermissions -UNCScripts $MappedDrives -SafeUsersList $SafeUsers
 } else {
     Write-Host "[i] No mapped drives found!`n" -ForegroundColor Cyan
 }
-
 # Find unsafe NETLOGON & SYSVOL share permissions
 $NetlogonSysvol = Get-NetlogonSysvol
 $UnsafeNetlogonSysvol = Find-UnsafeUNCPermissions -UNCScripts $NetlogonSysvol -SafeUsersList $SafeUsers
-
 if ($GPOLogonScripts) {
     # Find unsafe permissions on GPO logon scripts
     $UnsafeGPOLogonScripts = Find-UnsafeGPOLogonScriptPermissions -GPOLogonScripts $GPOLogonScripts -SafeUsersList $SafeUsers
 } else {
     Write-Host "[i] No GPO logon scripts found!`n" -ForegroundColor Cyan
 }
-
 # Find admins that have logon scripts assigned
 $AdminLogonScripts = Find-AdminLogonScripts -AdminUsers $AdminUsers
-
 # Show all results
 if ($UnsafeMappedDrives) {Show-Results $UnsafeMappedDrives}
 if ($UnsafeLogonScripts) {Show-Results $UnsafeLogonScripts}
@@ -1612,7 +1499,6 @@ if ($Credentials) {Show-Results $Credentials}
 if ($NonExistentShares) {Show-Results $NonExistentShares}
 if ($AdminLogonScripts) {Show-Results $AdminLogonScripts}
 if ($ExploitableLogonScripts) {Show-Results $ExploitableLogonScripts}
-
 if ($SaveOutput) {
     if ($UnsafeMappedDrives) {
         Write-Host "[i] Saving UnsafeMappedDrives.csv to the current directory" -ForegroundColor Cyan
@@ -1650,7 +1536,6 @@ if ($SaveOutput) {
         Write-Host "[i] Saving ExploitableLogonScripts.csv to the current directory" -ForegroundColor Cyan
         $ExploitableLogonScripts | Export-CSV -NoTypeInformation ExploitableLogonScripts.csv
     }
-
     Get-ChildItem -Filter "*.csv" -File
 }
 }
